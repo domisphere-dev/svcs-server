@@ -1,53 +1,72 @@
-# SVCS Remote Server (Flask)
+# SVCS Server (a tiny Flask gremlin that holds your commits)
 
-This is the **SVCS remote server** implementation. It provides a tiny HTTP API that the SVCS client can use to:
+this is the **server** part of SVCS.  
+it’s basically a small flask app that sits there and accepts your SVCS client’s HTTP requests like:
 
-- create remote repositories
-- **push** SVCS data (`objects`, `commits`, `branches`) plus an optional working-tree snapshot
-- **pull** only the SVCS database portion (so clients can sync `.svcs` without overwriting their working files)
-- serve a **snapshot** of a commit’s working tree (so `clone` can download the full project files)
+> “hello yes i would like to upload my entire `.svcs` folder and also my working directory please”  
+> - the client, probably
 
-Remote repositories are stored on disk under a `repos/` directory.
+it stores “remote repos” on disk under `repos/` and pretends it’s a grown-up version control hosting service.
+it is not. it is a **filesystem with an attitude**.
+
+---
+
+## What does it do?
+
+this server exists so the SVCS client can:
+
+- **create** a remote repo (`POST /create/<repo>`)
+- **push** SVCS data (`objects`, `commits`, `branches`) (`POST /push/<repo>`)
+- **pull** only the SVCS database part (`GET /pull/<repo>`)
+- **serve snapshots** of a commit’s working tree so `clone` can reconstruct files (`GET /snapshot/<repo>/<commit>`)
+- list repos (`GET /repos`)
+- vibe-check itself (`GET /health`)
+
+tl;dr: it’s the “remote” your client points at when you run `svcs remote add ...`.
 
 ---
 
 ## Requirements
 
-- Python **3.9+**
-- Flask
+- python **3.9+**
+- flask
 
-Install:
+install flask:
 
 ```bash
 pip install flask
 ```
 
+(yes i know, i could’ve used a requirements.txt. i didn’t. welcome to svcs.)
+
 ---
 
-## Run the server
+## Run it
 
-From the directory containing the server script (e.g. `repo_manager.py`):
+from this repo folder:
 
 ```bash
-python3 repo_manager.py
+python3 server.py
 ```
 
-The server listens on:
+it runs on:
 
-- `http://0.0.0.0:5000` (accessible on the LAN)
-- locally: `http://127.0.0.1:5000`
+- `http://0.0.0.0:5000` (LAN / “oops i exposed it” mode)
+- `http://127.0.0.1:5000` (your own machine, where it belongs)
 
 ---
 
-## Verify it’s the right server
+## Verify you’re running the right thing
 
-This server provides a `/health` endpoint that lists supported routes:
+this server has a `/health` endpoint that tells you what routes it supports:
 
 ```bash
 curl http://127.0.0.1:5000/health
 ```
 
-Expected output includes:
+if you get a flask 404 html blob, congrats: you’re not running this server (or you angered the network gods).
+
+expected routes include:
 
 - `POST /create/<repo>`
 - `POST /push/<repo>`
@@ -56,44 +75,42 @@ Expected output includes:
 - `GET  /repos`
 - `GET  /health`
 
-If `/health` returns a Flask 404 HTML page, you are not running this server file/process.
-
 ---
 
-## On-disk layout
+## Where does it store stuff?
 
-Each remote repo is stored at:
+it makes a folder called:
 
-```
+```text
 repos/<repo>/
 ```
 
-Inside each repo:
+inside each repo you get:
 
 - `objects/` — blob objects by hash (binary files)
-- `commits/` — commit JSON documents (`<commit>.json`)
-- `branches/` — branch head pointers (file name = branch name)
+- `commits/` — commit json docs (`<commit>.json`)
+- `branches/` — branch pointers (file name = branch)
 - `snapshots/` — working-tree snapshots per commit (`<commit>.json`)
 - `HEAD` — default branch name (created as `main`)
 
+so yeah… it’s literally “git, if git was a pile of folders”.
+
 ---
 
-## API
+## the API (aka “the endpoints i told flask to babysit”)
 
 ### `GET /health`
-Returns basic status and route list.
-
-**Response:** JSON
+returns `{ ok: true, routes: [...] }` so you can see what the server *thinks* it is.
 
 ---
 
 ### `POST /create/<repo>`
-Create a new remote repository named `<repo>`.
+creates a new remote repo.
 
 - **201**: created
-- **400**: repo already exists
+- **400**: already exists
 
-Example:
+example:
 
 ```bash
 curl -X POST http://127.0.0.1:5000/create/myrepo
@@ -102,9 +119,9 @@ curl -X POST http://127.0.0.1:5000/create/myrepo
 ---
 
 ### `POST /push/<repo>`
-Push SVCS database content to the remote repository.
+uploads SVCS database content *and optionally* a working tree snapshot.
 
-**Request body (JSON):**
+the client usually sends:
 
 ```json
 {
@@ -125,19 +142,20 @@ Push SVCS database content to the remote repository.
 }
 ```
 
-Notes:
+notes (read these, future-me will thank you):
 
-- `objects`, `commits`, `branches` are the **SVCS database portion**.
-- `working_tree` is optional but recommended if you want `clone` to reconstruct the full working directory.
-- If both `working_tree` and `snapshot_commit` are present, the server stores a snapshot under:
+- `objects`, `commits`, `branches` = the **.svcs database**
+- `working_tree` is optional, but if you want `clone` to actually recreate files, you probably want it
+- if both `working_tree` and `snapshot_commit` are present, it stores a snapshot at:
   - `repos/<repo>/snapshots/<snapshot_commit>.json`
 
-**Responses:**
+responses:
+
 - **200**: push successful
 - **404**: repo not found
-- **400**: invalid base64 object data (if decoding fails)
+- **400**: invalid base64 object data (aka you sent cursed bytes)
 
-Example:
+tiny example push (mostly useless but it proves the endpoint exists):
 
 ```bash
 curl -X POST http://127.0.0.1:5000/push/myrepo \
@@ -148,25 +166,15 @@ curl -X POST http://127.0.0.1:5000/push/myrepo \
 ---
 
 ### `GET /pull/<repo>`
-Pull returns **only** the SVCS database portion (`objects`, `commits`, `branches`).
+returns **only** the SVCS DB portion:
 
-This is intentionally designed so clients can sync `.svcs` without overwriting their working directory files.
+- objects (base64)
+- commits (json)
+- branches (strings)
 
-**Response (JSON):**
+this is *on purpose* so clients can sync `.svcs` without overwriting working files.
 
-```json
-{
-  "objects": { "<sha1>": "<base64-bytes>" },
-  "commits": { "<commitId>": { "... commit json ..." } },
-  "branches": { "<branchName>": "<commitId>" }
-}
-```
-
-**Responses:**
-- **200**: ok
-- **404**: repo not found
-
-Example:
+example:
 
 ```bash
 curl http://127.0.0.1:5000/pull/myrepo
@@ -175,16 +183,11 @@ curl http://127.0.0.1:5000/pull/myrepo
 ---
 
 ### `GET /snapshot/<repo>/<commit>`
-Returns the stored working-tree snapshot for a given commit id.
+returns the stored working-tree snapshot for that commit id.
 
-Used primarily by the client’s `clone` command.
+this is what makes `svcs clone ...` work without needing a real checkout protocol.
 
-**Responses:**
-- **200**: JSON mapping `path -> base64 file contents`
-- **404**: repo not found
-- **404**: snapshot not found for commit
-
-Example:
+example:
 
 ```bash
 curl http://127.0.0.1:5000/snapshot/myrepo/a1b2c3d
@@ -193,9 +196,9 @@ curl http://127.0.0.1:5000/snapshot/myrepo/a1b2c3d
 ---
 
 ### `GET /repos`
-Lists remote repositories available on the server.
+lists all repos on disk under `repos/`.
 
-Example:
+example:
 
 ```bash
 curl http://127.0.0.1:5000/repos
@@ -203,24 +206,34 @@ curl http://127.0.0.1:5000/repos
 
 ---
 
-## Security warning
+## Security warning (aka “please don’t put this on the public internet”)
 
-This server is intentionally minimal and **not secure**:
+this server is intentionally minimal and **not secure**:
 
 - no authentication
 - no access control
 - no rate limiting
-- accepts arbitrary file paths in snapshots (clients should behave, but don’t expose this publicly)
+- accepts arbitrary file paths in snapshots (yes, i know)
 
-Run it only in a trusted environment (local machine / private network).
+run it only on your own machine or a trusted network unless you *enjoy* chaos.
+
+---
+
+## Typical workflow (with the SVCS client)
+
+1. start this server
+2. on the client:
+   - `svcs init`
+   - commit some stuff
+   - `svcs remote add origin http://127.0.0.1:5000 myrepo`
+   - `svcs push origin`
+3. on another machine (or folder) clone:
+   - `svcs clone http://127.0.0.1:5000 myrepo some-folder`
+
+and then you pretend you built github. (you didn’t. but it’s cute.)
 
 ---
 
-## Typical workflow (with SVCS client)
+## License
 
-1. Start server
-2. Client creates commits locally
-3. Client `push` uploads SVCS DB + snapshot
-4. Another client `clone` pulls SVCS DB + fetches snapshot to reconstruct files
-
----
+This project is MIT Licensed. Do whatever you want with it, just don’t sue me if your files get lost in the time vortex.
