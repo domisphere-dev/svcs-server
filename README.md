@@ -4,10 +4,12 @@ this is the **server** part of SVCS.
 it's basically a small flask app that sits there and accepts your SVCS client's HTTP requests like:
 
 > "hello yes i would like to upload my entire `.svcs` folder and also my working directory please"  
-> - the client, probably
+> — the client, probably
 
-it stores "remote repos" on disk under `repos/` and pretends it's a grown-up version control hosting service.
+it stores "remote repos" on disk under `repos/` and pretends it's a grown-up version control hosting service.  
 it is not. it is a **filesystem with an attitude**.
+
+as of recently, it also does **login** and **per-user repo scoping**, because apparently we live in a society.
 
 ---
 
@@ -15,14 +17,18 @@ it is not. it is a **filesystem with an attitude**.
 
 this server exists so the SVCS client can:
 
-- **create** a remote repo (`POST /create/<repo>`)
-- **push** SVCS data (`objects`, `commits`, `twigs`) (`POST /push/<repo>`)
-- **pull** only the SVCS database part (`GET /pull/<repo>`)
-- **serve snapshots** of a commit's working tree so `clone` can reconstruct files (`GET /snapshot/<repo>/<commit>`)
-- list repos (`GET /repos`)
+- **login** to get a token (`POST /login`)
+- **create** a remote repo (`POST /create/<user>/<repo>`)
+- **push** SVCS data (`objects`, `commits`, `twigs`) (`POST /push/<user>/<repo>`)
+- **pull** only the SVCS database part (`GET /pull/<user>/<repo>`)
+- **serve snapshots** of a commit's working tree so `clone` can reconstruct files (`GET /snapshot/<user>/<repo>/<commit>`)
+- list repos for a user (`GET /repos/<user>`)
 - vibe-check itself (`GET /health`)
 
-tl;dr: it's the "remote" your client points at when you run `svcs remote add ...`.
+tl;dr: it's the "remote" your client points at when you run `svcs remote add ...`, except now it's like:
+> "remote add origin http://server myrepo"  
+> and then also  
+> "btw i'm alice and i have a token"  
 
 ---
 
@@ -68,21 +74,62 @@ if you get a flask 404 html blob, congrats: you're not running this server (or y
 
 expected routes include:
 
-- `POST /create/<repo>`
-- `POST /push/<repo>`
-- `GET  /pull/<repo>`
-- `GET  /snapshot/<repo>/<commit>`
-- `GET  /repos`
+- `POST /login`
+- `POST /create/<user>/<repo>`
+- `POST /push/<user>/<repo>`
+- `GET  /pull/<user>/<repo>`
+- `GET  /snapshot/<user>/<repo>/<commit>`
+- `GET  /repos/<user>`
 - `GET  /health`
+
+---
+
+## Auth (aka "fine, you get tokens")
+
+### `POST /login`
+login returns a token you use for basically everything else.
+
+request:
+
+```bash
+curl -X POST http://127.0.0.1:5000/login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"alice","password":"secret"}'
+```
+
+response:
+
+```json
+{ "token": "....", "username": "alice" }
+```
+
+user creation:
+- in this toy server, users are typically **auto-created on first login** (aka: "signup by existing")
+- user data is stored in `users.json`
+- tokens are stored in `tokens.json`
+
+### auth header
+all protected routes require:
+
+```text
+Authorization: Bearer <token>
+```
+
+example:
+
+```bash
+TOKEN="...token from /login..."
+curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:5000/repos/alice
+```
 
 ---
 
 ## Where does it store stuff?
 
-it makes a folder called:
+it makes a folder tree like:
 
 ```text
-repos/<repo>/
+repos/<username>/<repo>/
 ```
 
 inside each repo you get:
@@ -93,7 +140,7 @@ inside each repo you get:
 - `snapshots/` - working-tree snapshots per commit (`<commit>.json`)
 - `HEAD` - default twig name (created as `main`)
 
-so yeah... it's literally "git, if git was a pile of folders".
+so yeah... it's literally "git, if git was a pile of folders", but now it also believes in *folders per person*.
 
 ---
 
@@ -104,21 +151,25 @@ returns `{ ok: true, routes: [...] }` so you can see what the server *thinks* it
 
 ---
 
-### `POST /create/<repo>`
-creates a new remote repo.
+### `POST /create/<user>/<repo>`
+creates a new remote repo **under that user**.
 
 - **201**: created
 - **400**: already exists
+- **401**: missing/invalid token
+- **403**: token user != `<user>` in the path (nice try)
 
 example:
 
 ```bash
-curl -X POST http://127.0.0.1:5000/create/myrepo
+TOKEN="..."
+curl -X POST http://127.0.0.1:5000/create/alice/myrepo \
+  -H "Authorization: Bearer $TOKEN"
 ```
 
 ---
 
-### `POST /push/<repo>`
+### `POST /push/<user>/<repo>`
 uploads SVCS database content *and optionally* a working tree snapshot.
 
 the client usually sends:
@@ -144,45 +195,51 @@ the client usually sends:
 
 notes (read these, future-me will thank you):
 
-- `objects`, `commits`, `tiwgs` = the **.svcs database**
+- `objects`, `commits`, `twigs` = the **.svcs database**
 - `working_tree` is optional, but if you want `clone` to actually recreate files, you probably want it
 - if both `working_tree` and `snapshot_commit` are present, it stores a snapshot at:
-  - `repos/<repo>/snapshots/<snapshot_commit>.json`
+  - `repos/<user>/<repo>/snapshots/<snapshot_commit>.json`
 
 responses:
 
 - **200**: push successful
 - **404**: repo not found
 - **400**: invalid base64 object data (aka you sent cursed bytes)
+- **401**: unauthorized (no token / bad token)
+- **403**: forbidden (wrong user in URL)
 
 tiny example push (mostly useless but it proves the endpoint exists):
 
 ```bash
-curl -X POST http://127.0.0.1:5000/push/myrepo \
+TOKEN="..."
+curl -X POST http://127.0.0.1:5000/push/alice/myrepo \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"objects": {}, "commits": {}, "tiwgs": {}}'
+  -d '{"objects": {}, "commits": {}, "twigs": {}}'
 ```
 
 ---
 
-### `GET /pull/<repo>`
+### `GET /pull/<user>/<repo>`
 returns **only** the SVCS DB portion:
 
 - objects (base64)
 - commits (json)
-- tiwgs (strings)
+- twigs (strings)
 
 this is *on purpose* so clients can sync `.svcs` without overwriting working files.
 
 example:
 
 ```bash
-curl http://127.0.0.1:5000/pull/myrepo
+TOKEN="..."
+curl http://127.0.0.1:5000/pull/alice/myrepo \
+  -H "Authorization: Bearer $TOKEN"
 ```
 
 ---
 
-### `GET /snapshot/<repo>/<commit>`
+### `GET /snapshot/<user>/<repo>/<commit>`
 returns the stored working-tree snapshot for that commit id.
 
 this is what makes `svcs clone ...` work without needing a real checkout protocol.
@@ -190,30 +247,34 @@ this is what makes `svcs clone ...` work without needing a real checkout protoco
 example:
 
 ```bash
-curl http://127.0.0.1:5000/snapshot/myrepo/a1b2c3d
+TOKEN="..."
+curl http://127.0.0.1:5000/snapshot/alice/myrepo/a1b2c3d \
+  -H "Authorization: Bearer $TOKEN"
 ```
 
 ---
 
-### `GET /repos`
-lists all repos on disk under `repos/`.
+### `GET /repos/<user>`
+lists all repos on disk under `repos/<user>/`.
 
 example:
 
 ```bash
-curl http://127.0.0.1:5000/repos
+TOKEN="..."
+curl http://127.0.0.1:5000/repos/alice \
+  -H "Authorization: Bearer $TOKEN"
 ```
 
 ---
 
 ## Security warning (aka "please don't put this on the public internet")
 
-this server is intentionally minimal and **not secure**:
+this server is intentionally minimal and **still not secure** in any serious way:
 
-- no authentication
-- no access control
+- auth is "basic token + json files"
 - no rate limiting
-- accepts arbitrary file paths in snapshots (yes, i know)
+- no lock/transaction safety
+- this is a toy. a funny toy. but still a toy.
 
 run it only on your own machine or a trusted network unless you *enjoy* chaos.
 
@@ -222,13 +283,16 @@ run it only on your own machine or a trusted network unless you *enjoy* chaos.
 ## Typical workflow (with the SVCS client)
 
 1. start this server
-2. on the client:
+2. on the client (first time):
    - `svcs init`
-   - commit some stuff
    - `svcs remote add origin http://127.0.0.1:5000 myrepo`
-   - `svcs push origin`
-3. on another machine (or folder) clone:
-   - `svcs clone http://127.0.0.1:5000 myrepo some-folder`
+   - `svcs login http://127.0.0.1:5000 alice secret`
+3. commit + push:
+   - `svcs add .`
+   - `svcs commit "hello from the void"`
+   - `svcs push origin --user alice`
+4. on another machine (or folder) clone:
+   - `svcs clone http://127.0.0.1:5000 myrepo some-folder --user alice`
 
 and then you pretend you built github. (you didn't. but it's cute.)
 
