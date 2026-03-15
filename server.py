@@ -23,7 +23,7 @@ def repo_path(name):
 def ensure_repo_dirs(path):
     os.makedirs(os.path.join(path, "objects"), exist_ok=True)
     os.makedirs(os.path.join(path, "commits"), exist_ok=True)
-    os.makedirs(os.path.join(path, "branches"), exist_ok=True)
+    os.makedirs(os.path.join(path, "twigs"), exist_ok=True)
     os.makedirs(os.path.join(path, "snapshots"), exist_ok=True)  # NEW: commit snapshots
     head = os.path.join(path, "HEAD")
     if not os.path.exists(head):
@@ -67,7 +67,7 @@ def push(repo):
     data = request.get_json(silent=True) or {}
     objects = data.get("objects", {})
     commits = data.get("commits", {})
-    branches = data.get("branches", {})
+    twigs = data.get("twigs", {})
 
     # NEW: working tree snapshot (path -> base64 file content)
     working_tree = data.get("working_tree", {})
@@ -91,9 +91,9 @@ def push(repo):
         if not os.path.exists(commit_file):
             write_json(commit_file, cdata)
 
-    # update branch HEADs
-    for branch, head in branches.items():
-        with open(os.path.join(path, "branches", branch), "w") as f:
+    # update twig HEADs
+    for twig, head in twigs.items():
+        with open(os.path.join(path, "twigs", twig), "w") as f:
             f.write(head)
 
     # store snapshot if provided
@@ -105,7 +105,7 @@ def push(repo):
 
 @app.route("/pull/<repo>", methods=["GET"])
 def pull(repo):
-    # Pull returns ONLY .svcs DB portion (objects/commits/branches)
+    # Pull returns ONLY .svcs DB portion (objects/commits/twigs)
     path = repo_path(repo)
     if not os.path.exists(path):
         return "repo not found", 404
@@ -114,7 +114,7 @@ def pull(repo):
 
     objects = {}
     commits = {}
-    branches = {}
+    twigs = {}
 
     # encode objects
     obj_dir = os.path.join(path, "objects")
@@ -132,16 +132,16 @@ def pull(repo):
             cid = fname[:-5]
             commits[cid] = read_json(os.path.join(commits_dir, fname))
 
-    # load branches
-    branches_dir = os.path.join(path, "branches")
-    for fname in os.listdir(branches_dir):
-        full = os.path.join(branches_dir, fname)
+    # load twigs
+    twigs_dir = os.path.join(path, "twigs")
+    for fname in os.listdir(twigs_dir):
+        full = os.path.join(twigs_dir, fname)
         if not os.path.isfile(full):
             continue
         with open(full) as f:
-            branches[fname] = f.read().strip()
+            twigs[fname] = f.read().strip()
 
-    return jsonify({"objects": objects, "commits": commits, "branches": branches})
+    return jsonify({"objects": objects, "commits": commits, "twigs": twigs})
 
 @app.route("/snapshot/<repo>/<commit>", methods=["GET"])
 def snapshot(repo, commit):

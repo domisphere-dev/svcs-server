@@ -16,7 +16,7 @@ it is not. it is a **filesystem with an attitude**.
 this server exists so the SVCS client can:
 
 - **create** a remote repo (`POST /create/<repo>`)
-- **push** SVCS data (`objects`, `commits`, `branches`) (`POST /push/<repo>`)
+- **push** SVCS data (`objects`, `commits`, `twigs`) (`POST /push/<repo>`)
 - **pull** only the SVCS database part (`GET /pull/<repo>`)
 - **serve snapshots** of a commit's working tree so `clone` can reconstruct files (`GET /snapshot/<repo>/<commit>`)
 - list repos (`GET /repos`)
@@ -89,9 +89,9 @@ inside each repo you get:
 
 - `objects/` - blob objects by hash (binary files)
 - `commits/` - commit json docs (`<commit>.json`)
-- `branches/` - branch pointers (file name = branch)
+- `twigs/` - twig pointers (file name = twig)
 - `snapshots/` - working-tree snapshots per commit (`<commit>.json`)
-- `HEAD` - default branch name (created as `main`)
+- `HEAD` - default twig name (created as `main`)
 
 so yeah... it's literally "git, if git was a pile of folders".
 
@@ -131,8 +131,8 @@ the client usually sends:
   "commits": {
     "<commitId>": { "... commit json ..." }
   },
-  "branches": {
-    "<branchName>": "<commitId>"
+  "twigs": {
+    "<twigName>": "<commitId>"
   },
 
   "working_tree": {
@@ -144,7 +144,7 @@ the client usually sends:
 
 notes (read these, future-me will thank you):
 
-- `objects`, `commits`, `branches` = the **.svcs database**
+- `objects`, `commits`, `tiwgs` = the **.svcs database**
 - `working_tree` is optional, but if you want `clone` to actually recreate files, you probably want it
 - if both `working_tree` and `snapshot_commit` are present, it stores a snapshot at:
   - `repos/<repo>/snapshots/<snapshot_commit>.json`
@@ -160,7 +160,7 @@ tiny example push (mostly useless but it proves the endpoint exists):
 ```bash
 curl -X POST http://127.0.0.1:5000/push/myrepo \
   -H "Content-Type: application/json" \
-  -d '{"objects": {}, "commits": {}, "branches": {}}'
+  -d '{"objects": {}, "commits": {}, "tiwgs": {}}'
 ```
 
 ---
@@ -170,7 +170,7 @@ returns **only** the SVCS DB portion:
 
 - objects (base64)
 - commits (json)
-- branches (strings)
+- tiwgs (strings)
 
 this is *on purpose* so clients can sync `.svcs` without overwriting working files.
 
