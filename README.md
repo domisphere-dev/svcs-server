@@ -1,12 +1,12 @@
 # SVCS Server (a tiny Flask gremlin that holds your commits)
 
 this is the **server** part of SVCS.  
-it’s basically a small flask app that sits there and accepts your SVCS client’s HTTP requests like:
+it's basically a small flask app that sits there and accepts your SVCS client's HTTP requests like:
 
-> “hello yes i would like to upload my entire `.svcs` folder and also my working directory please”  
+> "hello yes i would like to upload my entire `.svcs` folder and also my working directory please"  
 > - the client, probably
 
-it stores “remote repos” on disk under `repos/` and pretends it’s a grown-up version control hosting service.
+it stores "remote repos" on disk under `repos/` and pretends it's a grown-up version control hosting service.
 it is not. it is a **filesystem with an attitude**.
 
 ---
@@ -18,11 +18,11 @@ this server exists so the SVCS client can:
 - **create** a remote repo (`POST /create/<repo>`)
 - **push** SVCS data (`objects`, `commits`, `branches`) (`POST /push/<repo>`)
 - **pull** only the SVCS database part (`GET /pull/<repo>`)
-- **serve snapshots** of a commit’s working tree so `clone` can reconstruct files (`GET /snapshot/<repo>/<commit>`)
+- **serve snapshots** of a commit's working tree so `clone` can reconstruct files (`GET /snapshot/<repo>/<commit>`)
 - list repos (`GET /repos`)
 - vibe-check itself (`GET /health`)
 
-tl;dr: it’s the “remote” your client points at when you run `svcs remote add ...`.
+tl;dr: it's the "remote" your client points at when you run `svcs remote add ...`.
 
 ---
 
@@ -37,7 +37,7 @@ install flask:
 pip install flask
 ```
 
-(yes i know, i could’ve used a requirements.txt. i didn’t. welcome to svcs.)
+(yes i know, i could've used a requirements.txt. i didn't. welcome to svcs.)
 
 ---
 
@@ -51,12 +51,12 @@ python3 server.py
 
 it runs on:
 
-- `http://0.0.0.0:5000` (LAN / “oops i exposed it” mode)
+- `http://0.0.0.0:5000` (LAN / "oops i exposed it" mode)
 - `http://127.0.0.1:5000` (your own machine, where it belongs)
 
 ---
 
-## Verify you’re running the right thing
+## Verify you're running the right thing
 
 this server has a `/health` endpoint that tells you what routes it supports:
 
@@ -64,7 +64,7 @@ this server has a `/health` endpoint that tells you what routes it supports:
 curl http://127.0.0.1:5000/health
 ```
 
-if you get a flask 404 html blob, congrats: you’re not running this server (or you angered the network gods).
+if you get a flask 404 html blob, congrats: you're not running this server (or you angered the network gods).
 
 expected routes include:
 
@@ -87,17 +87,17 @@ repos/<repo>/
 
 inside each repo you get:
 
-- `objects/` — blob objects by hash (binary files)
-- `commits/` — commit json docs (`<commit>.json`)
-- `branches/` — branch pointers (file name = branch)
-- `snapshots/` — working-tree snapshots per commit (`<commit>.json`)
-- `HEAD` — default branch name (created as `main`)
+- `objects/` - blob objects by hash (binary files)
+- `commits/` - commit json docs (`<commit>.json`)
+- `branches/` - branch pointers (file name = branch)
+- `snapshots/` - working-tree snapshots per commit (`<commit>.json`)
+- `HEAD` - default branch name (created as `main`)
 
-so yeah… it’s literally “git, if git was a pile of folders”.
+so yeah... it's literally "git, if git was a pile of folders".
 
 ---
 
-## the API (aka “the endpoints i told flask to babysit”)
+## the API (aka "the endpoints i told flask to babysit")
 
 ### `GET /health`
 returns `{ ok: true, routes: [...] }` so you can see what the server *thinks* it is.
@@ -206,7 +206,7 @@ curl http://127.0.0.1:5000/repos
 
 ---
 
-## Security warning (aka “please don’t put this on the public internet”)
+## Security warning (aka "please don't put this on the public internet")
 
 this server is intentionally minimal and **not secure**:
 
@@ -230,10 +230,10 @@ run it only on your own machine or a trusted network unless you *enjoy* chaos.
 3. on another machine (or folder) clone:
    - `svcs clone http://127.0.0.1:5000 myrepo some-folder`
 
-and then you pretend you built github. (you didn’t. but it’s cute.)
+and then you pretend you built github. (you didn't. but it's cute.)
 
 ---
 
 ## License
 
-This project is MIT Licensed. Do whatever you want with it, just don’t sue me if your files get lost in the time vortex.
+This project is MIT Licensed. Do whatever you want with it, just don't sue me if your files get lost in the time vortex.
