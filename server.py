@@ -2,14 +2,29 @@ from flask import Flask, request, jsonify
 import os
 import json
 import base64
+import secrets
+import hashlib
+import hmac
+from functools import wraps
 
 app = Flask(__name__)
+
 BASE_DIR = "repos"
 os.makedirs(BASE_DIR, exist_ok=True)
+
+# Simple auth storage (toy, but works):
+# tokens.json: { "<token>": { "username": "...", "created_at": 1234567890 } }
+TOKENS_FILE = "tokens.json"
+
+# Simple user DB (toy):
+# users.json: { "<username>": { "password_sha256": "<hex>" } }
+USERS_FILE = "users.json"
+
 
 def write_json(path, data):
     with open(path, "w") as f:
         json.dump(data, f, indent=2)
+
 
 def read_json(path):
     if not os.path.exists(path):
@@ -17,48 +32,163 @@ def read_json(path):
     with open(path) as f:
         return json.load(f)
 
-def repo_path(name):
-    return os.path.join(BASE_DIR, name)
+
+def _sha256_hex(s: str) -> str:
+    return hashlib.sha256(s.encode("utf-8")).hexdigest()
+
+
+def _timing_safe_equal(a: str, b: str) -> bool:
+    # Avoid leaking info via timing.
+    return hmac.compare_digest(a.encode("utf-8"), b.encode("utf-8"))
+
+
+def _load_users():
+    return read_json(USERS_FILE) or {}
+
+
+def _save_users(users):
+    write_json(USERS_FILE, users)
+
+
+def _load_tokens():
+    return read_json(TOKENS_FILE) or {}
+
+
+def _save_tokens(tokens):
+    write_json(TOKENS_FILE, tokens)
+
+
+def ensure_user_dir(username: str):
+    # Ensure repos/<username>/ exists
+    os.makedirs(os.path.join(BASE_DIR, username), exist_ok=True)
+
+
+def repo_path(username: str, repo: str):
+    # repos/<username>/<repo>/
+    ensure_user_dir(username)
+    return os.path.join(BASE_DIR, username, repo)
+
 
 def ensure_repo_dirs(path):
     os.makedirs(os.path.join(path, "objects"), exist_ok=True)
     os.makedirs(os.path.join(path, "commits"), exist_ok=True)
     os.makedirs(os.path.join(path, "twigs"), exist_ok=True)
-    os.makedirs(os.path.join(path, "snapshots"), exist_ok=True)  # NEW: commit snapshots
+    os.makedirs(os.path.join(path, "snapshots"), exist_ok=True)
     head = os.path.join(path, "HEAD")
     if not os.path.exists(head):
         with open(head, "w") as f:
             f.write("main")
 
+
 def snapshot_path(repo_dir, commit_id):
     return os.path.join(repo_dir, "snapshots", f"{commit_id}.json")
+
+
+def _get_bearer_token():
+    auth = request.headers.get("Authorization", "")
+    if not auth:
+        return None
+    parts = auth.split(" ", 1)
+    if len(parts) != 2:
+        return None
+    scheme, token = parts[0].strip(), parts[1].strip()
+    if scheme.lower() != "bearer" or not token:
+        return None
+    return token
+
+
+def require_auth(fn):
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        token = _get_bearer_token()
+        if not token:
+            return "missing bearer token", 401
+        tokens = _load_tokens()
+        info = tokens.get(token)
+        if not info or "username" not in info:
+            return "invalid token", 401
+        # stash username for handler use
+        request.svcs_user = info["username"]
+        return fn(*args, **kwargs)
+
+    return wrapper
+
 
 @app.get("/health")
 def health():
     return jsonify(
         ok=True,
         routes=[
-            "POST /create/<repo>",
-            "POST /push/<repo>",
-            "GET  /pull/<repo>",
-            "GET  /snapshot/<repo>/<commit>",
-            "GET  /repos",
+            "POST /login",
+            "POST /create/<user>/<repo>",
+            "POST /push/<user>/<repo>",
+            "GET  /pull/<user>/<repo>",
+            "GET  /snapshot/<user>/<repo>/<commit>",
+            "GET  /repos/<user>",
             "GET  /health",
         ],
     )
 
-@app.route("/create/<repo>", methods=["POST"])
-def create_repo(repo):
-    path = repo_path(repo)
+
+@app.post("/login")
+def login():
+    """
+    Basic login that issues a token per user.
+
+    Request JSON:
+      { "username": "...", "password": "..." }
+
+    If username doesn't exist yet, we auto-create it (toy behavior).
+    """
+    data = request.get_json(silent=True) or {}
+    username = (data.get("username") or "").strip()
+    password = (data.get("password") or "")
+
+    if not username or not password:
+        return "missing username/password", 400
+
+    users = _load_users()
+    pw_hash = _sha256_hex(password)
+
+    if username not in users:
+        # Auto-register (simple/dev-friendly)
+        users[username] = {"password_sha256": pw_hash}
+        _save_users(users)
+    else:
+        stored = users[username].get("password_sha256") or ""
+        if not stored or not _timing_safe_equal(stored, pw_hash):
+            return "invalid username/password", 401
+
+    token = secrets.token_urlsafe(32)
+    tokens = _load_tokens()
+    tokens[token] = {"username": username}
+    _save_tokens(tokens)
+
+    return jsonify({"token": token, "username": username})
+
+
+@app.post("/create/<user>/<repo>")
+@require_auth
+def create_repo(user, repo):
+    # Enforce per-user scope: token user must match path user
+    if getattr(request, "svcs_user", None) != user:
+        return "forbidden", 403
+
+    path = repo_path(user, repo)
     if os.path.exists(path):
         return "repo already exists", 400
     os.makedirs(path, exist_ok=True)
     ensure_repo_dirs(path)
-    return f"repo {repo} created", 201
+    return f"repo {user}/{repo} created", 201
 
-@app.route("/push/<repo>", methods=["POST"])
-def push(repo):
-    path = repo_path(repo)
+
+@app.post("/push/<user>/<repo>")
+@require_auth
+def push(user, repo):
+    if getattr(request, "svcs_user", None) != user:
+        return "forbidden", 403
+
+    path = repo_path(user, repo)
     if not os.path.exists(path):
         return "repo not found", 404
 
@@ -69,9 +199,7 @@ def push(repo):
     commits = data.get("commits", {})
     twigs = data.get("twigs", {})
 
-    # NEW: working tree snapshot (path -> base64 file content)
     working_tree = data.get("working_tree", {})
-    # commit id to associate snapshot with (client sends it explicitly)
     snapshot_commit = data.get("snapshot_commit")
 
     # store objects
@@ -98,15 +226,18 @@ def push(repo):
 
     # store snapshot if provided
     if working_tree and snapshot_commit:
-        # keep only JSON-safe values; already base64 strings
         write_json(snapshot_path(path, snapshot_commit), working_tree)
 
     return "push successful", 200
 
-@app.route("/pull/<repo>", methods=["GET"])
-def pull(repo):
-    # Pull returns ONLY .svcs DB portion (objects/commits/twigs)
-    path = repo_path(repo)
+
+@app.get("/pull/<user>/<repo>")
+@require_auth
+def pull(user, repo):
+    if getattr(request, "svcs_user", None) != user:
+        return "forbidden", 403
+
+    path = repo_path(user, repo)
     if not os.path.exists(path):
         return "repo not found", 404
 
@@ -143,10 +274,14 @@ def pull(repo):
 
     return jsonify({"objects": objects, "commits": commits, "twigs": twigs})
 
-@app.route("/snapshot/<repo>/<commit>", methods=["GET"])
-def snapshot(repo, commit):
-    # For clone: download full working tree for a commit.
-    path = repo_path(repo)
+
+@app.get("/snapshot/<user>/<repo>/<commit>")
+@require_auth
+def snapshot(user, repo, commit):
+    if getattr(request, "svcs_user", None) != user:
+        return "forbidden", 403
+
+    path = repo_path(user, repo)
     if not os.path.exists(path):
         return "repo not found", 404
 
@@ -158,9 +293,17 @@ def snapshot(repo, commit):
 
     return jsonify(read_json(sp))
 
-@app.route("/repos", methods=["GET"])
-def list_repos():
-    return jsonify([name for name in os.listdir(BASE_DIR) if os.path.isdir(repo_path(name))])
+
+@app.get("/repos/<user>")
+@require_auth
+def list_user_repos(user):
+    if getattr(request, "svcs_user", None) != user:
+        return "forbidden", 403
+
+    user_dir = os.path.join(BASE_DIR, user)
+    ensure_user_dir(user)
+    return jsonify([name for name in os.listdir(user_dir) if os.path.isdir(os.path.join(user_dir, name))])
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=False)
